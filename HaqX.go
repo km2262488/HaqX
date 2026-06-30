@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +27,7 @@ import (
 
 const VERSION = "3.3.7"
 const CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+const ACCEPT = "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
 
 type (
 	Counter struct {
@@ -743,7 +743,7 @@ func Arm(req *http.Request, cfg *Target, host string, rng *rand.Rand) {
 	req.Header.Set("User-Agent", ua)
 	
 	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Accept-Charset", acceptCharset)
+	req.Header.Set("Accept-Charset", ACCEPT)
 	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
