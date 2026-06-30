@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const VERSION = "4.0.2"
+const VERSION = "4.0.3"
 const CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 const ACCEPT = "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
 
@@ -443,7 +443,7 @@ func main() {
 		dur     int
 		method  string
 		noprox  bool
-		url     string
+		site    string
 	)
 
 	flag.BoolVar(&showVer, "v", false, "Show version")
@@ -452,7 +452,7 @@ func main() {
 	flag.BoolVar(&noprox, "noprox", false, "Disable proxies")
 	flag.StringVar(&agents, "agents", "", "User-agent file")
 	flag.StringVar(&cfg.Data, "data", "", "POST data")
-	flag.StringVar(&url, "site", "", "Target URL")
+	flag.StringVar(&site, "site", "", "Target URL")
 	flag.IntVar(&conns, "c", 0, "Connections (default: 500)")
 	flag.IntVar(&to, "t", 0, "Timeout seconds (default: 5)")
 	flag.IntVar(&rate, "r", 0, "Rate limit (default: 1000)")
@@ -478,9 +478,9 @@ func main() {
 	
 	reader := bufio.NewReader(os.Stdin)
 	
-	// If URL provided via flag, use it
-	if url != "" {
-		cfg.URL = url
+	// If site provided via flag, use it
+	if site != "" {
+		cfg.URL = site
 	} else {
 		fmt.Print("🎯 Target URL: ")
 		target, _ := reader.ReadString('\n')
