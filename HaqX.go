@@ -26,9 +26,10 @@ import (
 	"time"
 )
 
-const VERSION = "4.0.4"
+const VERSION = "4.1.0"
 const CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 const ACCEPT = "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
+const PROXY_UPDATE_INTERVAL = 5 * time.Minute
 
 type (
 	Metric struct {
@@ -58,6 +59,8 @@ type (
 		Index       int
 		CurrentProxy string
 		OneLine     bool
+		LastUpdate  time.Time
+		UpdateMutex sync.Mutex
 		sync.Mutex
 	}
 	
@@ -65,6 +68,7 @@ type (
 		Sources   []string
 		Cache     []string
 		Tested    map[string]bool
+		LastFetch time.Time
 		sync.Mutex
 	}
 	
@@ -108,6 +112,7 @@ func NewConfig() *Target {
 		Proxy:       true,
 		ProxyStats:  make(map[string]int),
 		OneLine:     true,
+		LastUpdate:  time.Now(),
 		Agents: []string{
 			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
 			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
@@ -171,6 +176,30 @@ func (t *Target) MarkProxy(success bool) {
 		t.ProxyStats[t.CurrentProxy] = 0
 	} else {
 		t.ProxyStats[t.CurrentProxy]++
+	}
+}
+
+func (t *Target) UpdateProxyPool() {
+	t.UpdateMutex.Lock()
+	defer t.UpdateMutex.Unlock()
+	
+	if time.Since(t.LastUpdate) < PROXY_UPDATE_INTERVAL {
+		return
+	}
+	
+	fmt.Println("\n🔄 Updating proxies...")
+	hunter := Hunter()
+	proxies := hunter.Harvest()
+	if len(proxies) > 0 {
+		t.Lock()
+		t.Pool = proxies
+		t.ProxyStats = make(map[string]int)
+		t.Index = 0
+		t.LastUpdate = time.Now()
+		t.Unlock()
+		fmt.Printf("✅ Proxy pool updated: %d proxies\n", len(proxies))
+	} else {
+		fmt.Println("⚠️  Failed to update proxies, keeping existing pool")
 	}
 }
 
@@ -251,7 +280,6 @@ func (h *ProxyHunter) Harvest() []string {
 		}
 	}
 	
-	fmt.Printf("🔍 Testing %d proxies... ", len(unique))
 	var fastProxies []string
 	var mu sync.Mutex
 	var wgFilter sync.WaitGroup
@@ -273,7 +301,6 @@ func (h *ProxyHunter) Harvest() []string {
 	}
 	wgFilter.Wait()
 	
-	fmt.Printf("✅ %d fast proxies\n", len(fastProxies))
 	return fastProxies
 }
 
@@ -503,12 +530,25 @@ func main() {
 	}
 
 	if cfg.Proxy {
-		fmt.Println("🌐 Harvesting & filtering proxies...")
+		fmt.Println("🌐 Initial proxy harvest...")
 		hunter := Hunter()
 		proxies := hunter.Harvest()
 		if len(proxies) > 0 {
 			cfg.Pool = proxies
+			cfg.LastUpdate = time.Now()
+			fmt.Printf("✅ %d proxies loaded\n", len(proxies))
+			
+			// Start auto-update goroutine
+			go func() {
+				ticker := time.NewTicker(PROXY_UPDATE_INTERVAL)
+				defer ticker.Stop()
+				for range ticker.C {
+					cfg.UpdateProxyPool()
+				}
+			}()
+			
 		} else {
+			fmt.Println("⚠️  No proxies found, continuing without")
 			cfg.Proxy = false
 		}
 	}
@@ -517,7 +557,7 @@ func main() {
 		fmt.Printf("🚀 Starting: %s | Workers: %d | Timeout: %v | Rate: %d req/s", 
 			cfg.URL, cfg.Connections, cfg.Timeout, cfg.Rate)
 		if cfg.Proxy && len(cfg.Pool) > 0 {
-			fmt.Printf(" | Proxies: %d", len(cfg.Pool))
+			fmt.Printf(" | Proxies: %d (auto-update every 5m)", len(cfg.Pool))
 		}
 		fmt.Println()
 	}
@@ -636,8 +676,9 @@ func Launch(ctx context.Context, cancel context.CancelFunc, cfg *Target, parsed 
 				if elapsed > 0 {
 					rate = float64(sent) / elapsed
 				}
-				fmt.Printf("\r📊 %d req | ❌ %d err | 🔥 %d active | ⚡ %.1f req/s | ⏱️ %v",
-					sent, errs, active, rate, time.Since(Stats.Started).Round(time.Second))
+				proxyCount := len(cfg.Pool)
+				fmt.Printf("\r📊 %d req | ❌ %d err | 🔥 %d active | ⚡ %.1f req/s | ⏱️ %v | 🌐 %d proxies",
+					sent, errs, active, rate, time.Since(Stats.Started).Round(time.Second), proxyCount)
 			}
 		}
 	}()
