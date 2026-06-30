@@ -1,8 +1,8 @@
 package main
 
 /*
- HaqX - Advanced Network Stress Testing Tool (Optimized - One Line Mode)
- For Educational & Authorized Testing Only
+ HaqX - Advanced Network Stress Testing Tool
+ NOT For Educational & Authorized Testing Only
 */
 
 import (
@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const VERSION = "4.1.0"
+const VERSION = "1.0"
 const CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 const ACCEPT = "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
 const PROXY_UPDATE_INTERVAL = 5 * time.Minute
@@ -815,7 +815,9 @@ func Arm(req *http.Request, cfg *Target, host string, rng *rand.Rand) {
 }
 
 func Banner() {
-	fmt.Println("\033[97m" + `  ██╗  ██╗ █████╗  ██████╗ ██╗  ██╗
+	fmt.Println("\033[97m" + 
+				
+				`  ██╗  ██╗ █████╗  ██████╗ ██╗  ██╗
   ██║  ██║██╔══██╗██╔═══██╗╚██╗██╔╝
   ███████║███████║██║   ██║ ╚███╔╝ 
   ██╔══██║██╔══██║██║▄▄ ██║ ██╔██╗ 
@@ -823,7 +825,7 @@ func Banner() {
   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚══▀▀═╝ ╚═╝  ╚═╝` + "\033[0m")
 	fmt.Println()
 	fmt.Println("\033[97m" + "  🔥 HaqX v" + VERSION + "  ⚡" + "\033[0m")
-	fmt.Println("\033[97m" + "  Educational & Authorized Testing Only" + "\033[0m")
+	fmt.Println("\033[97m" + "  NOT for Educational & Authorized Testing Only" + "\033[0m")
 	fmt.Println()
 }
 
